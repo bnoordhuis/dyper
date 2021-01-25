@@ -1,0 +1,10 @@
+[package]
+name = "dyper"
+version = "0.1.0"
+authors = ["Ben Noordhuis <info@bnoordhuis.nl>"]
+edition = "2018"
+
+[dependencies]
+hyper = { version = "0.14.2", features = ["full"] }
+tokio = { version = "1.1.0", features = ["full"] }
+v8 = { version = "0.16.0", package = "rusty_v8" }
