@@ -102,7 +102,7 @@ async fn async_main() -> io::Result<()> {
 
     let filename = rest.first().unwrap();
     let source = std::fs::read_to_string(filename)
-      .expect(&format!("file not found: {}", filename));
+      .unwrap_or_else(|_| panic!("file not found: {}", filename));
 
     execute_script(scope, &filename, &source);
 
@@ -343,10 +343,8 @@ where
 {
   let array = v8::Array::new(scope, items.len() as i32);
 
-  let mut index = 0;
-  for item in items {
-    array.set_index(scope, index, item.into());
-    index += 1;
+  for (index, item) in items.into_iter().enumerate() {
+    array.set_index(scope, index as u32, item.into());
   }
 
   array
