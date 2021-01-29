@@ -1,10 +1,7 @@
-use hyper::header::HeaderName;
-use hyper::header::HeaderValue;
 use hyper::http;
 use hyper::server::conn::Http;
 use hyper::service::service_fn;
 use hyper::Body;
-use hyper::Method;
 use hyper::Request;
 use hyper::Response;
 use std::cell::RefCell;
@@ -14,15 +11,7 @@ use std::fs;
 use std::io;
 use std::process;
 
-use hyper::header::ACCEPT_ENCODING;
-use hyper::header::CONTENT_LENGTH;
-use hyper::header::DATE;
-use hyper::header::HOST;
-
 const HTTP_ADDR: &str = "127.0.0.1:4000";
-
-// static mut because HeaderValue::from_static() isn't const fn.
-static mut KNOWN_HEADER_VALUES: Vec<HeaderValue> = vec![];
 
 thread_local! {
   static RUNTIME: RefCell<Option<Runtime>> = RefCell::new(None);
@@ -44,12 +33,6 @@ impl Runtime {
 }
 
 fn main() {
-  let known_header_values = unsafe { &mut KNOWN_HEADER_VALUES };
-
-  for value in &["0", "1", "2"] {
-    known_header_values.push(HeaderValue::from_static(*value));
-  }
-
   tokio::runtime::Builder::new_current_thread()
     .enable_io()
     .enable_time()
@@ -165,44 +148,23 @@ async fn handle_request(req: Request<Body>) -> http::Result<Response<Body>> {
     let callback = v8::Local::new(scope, callback.clone());
     let undefined = v8::undefined(scope);
 
-    let headers = v8::Array::new(scope, req.headers().len() as i32);
-
-    let mut index = 0;
+    let mut headers = vec![];
 
     for (name, value) in req.headers().iter() {
-      let name = match *name {
-        ACCEPT_ENCODING => v8::Integer::new(scope, 0).into(),
-        CONTENT_LENGTH => v8::Integer::new(scope, 1).into(),
-        DATE => v8::Integer::new(scope, 2).into(),
-        HOST => v8::Integer::new(scope, 3).into(),
-        _ => v8_string(scope, &name.to_string()).into(),
-      };
+      let name = name.to_string();
+      let name = v8_string(scope, &name);
+      headers.push(name);
 
-      headers.set_index(scope, index, name);
-      index += 1;
-
-      let value = match value.to_str().unwrap_or("") {
-        "0" => v8::Integer::new(scope, 0).into(),
-        "1" => v8::Integer::new(scope, 1).into(),
-        "2" => v8::Integer::new(scope, 2).into(),
-        value => v8_string(scope, value).into(),
-      };
-
-      headers.set_index(scope, index, value);
-      index += 1;
+      let value = value.to_str().unwrap_or("");
+      let value = v8_string(scope, &value);
+      headers.push(value);
     }
 
-    let method = match *req.method() {
-      Method::GET => v8::Integer::new(scope, 0).into(),
-      _ => v8_string(scope, req.method().as_str()).into(),
-    };
+    let headers = v8_array(scope, headers);
+    let method = v8_string(scope, req.method().as_str());
+    let uri = v8_string(scope, &req.uri().to_string());
 
-    let path = match req.uri().path() {
-      "/" => v8::Integer::new(scope, 0).into(),
-      path => v8_string(scope, path).into(),
-    };
-
-    let args = &[method, path, headers.into()];
+    let args = &[method.into(), uri.into(), headers.into()];
 
     match callback.call(scope, undefined.into(), args) {
       None => {
@@ -239,36 +201,25 @@ async fn handle_request(req: Request<Body>) -> http::Result<Response<Body>> {
         let mut index = 0;
         let length = headers.length();
 
-        while index < length {
-          let name = headers.get_index(scope, index).unwrap();
-          index += 1;
+        while index + 1 < length {
+          let name = headers
+            .get_index(scope, index)
+            .unwrap()
+            .to_rust_string_lossy(scope);
 
-          let name = if name.is_uint32() {
-            match name.uint32_value(scope).unwrap() {
-              0 => ACCEPT_ENCODING,
-              1 => CONTENT_LENGTH,
-              2 => DATE,
-              3 => HOST,
-              _ => unreachable!(),
-            }
-          } else {
-            let name = name.to_rust_string_lossy(scope);
-            HeaderName::from_bytes(name.as_bytes()).unwrap()
-          };
+          let name =
+            hyper::header::HeaderName::from_bytes(name.as_bytes()).unwrap();
 
-          let value = headers.get_index(scope, index).unwrap();
-          index += 1;
+          let value = headers
+            .get_index(scope, index + 1)
+            .unwrap()
+            .to_rust_string_lossy(scope);
 
-          let value = if value.is_uint32() {
-            let known_header_values = unsafe { &KNOWN_HEADER_VALUES };
-            let value = value.uint32_value(scope).unwrap() as usize;
-            known_header_values[value].clone()
-          } else {
-            let value = value.to_rust_string_lossy(scope);
-            http::HeaderValue::from_str(&value).unwrap()
-          };
+          let value = http::HeaderValue::from_str(&value).unwrap();
 
           map.append(name, value);
+
+          index += 2;
         }
 
         res.body(body.into())
@@ -381,4 +332,20 @@ fn v8_string<'s>(
   string: &str,
 ) -> v8::Local<'s, v8::String> {
   v8::String::new(scope, string).unwrap()
+}
+
+fn v8_array<'s, T>(
+  scope: &mut v8::HandleScope<'s>,
+  items: Vec<T>,
+) -> v8::Local<'s, v8::Array>
+where
+  T: Into<v8::Local<'s, v8::Value>>,
+{
+  let array = v8::Array::new(scope, items.len() as i32);
+
+  for (index, item) in items.into_iter().enumerate() {
+    array.set_index(scope, index as u32, item.into());
+  }
+
+  array
 }
